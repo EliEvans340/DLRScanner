@@ -1,0 +1,38 @@
+You are analyzing a daily hotel industry newsletter email. Your task is to parse this newsletter and extract individual articles/news items from it.
+
+INSTRUCTIONS:
+1. Read the entire newsletter content carefully
+2. Identify each distinct article, news item, or story in the newsletter
+3. For each article, extract:
+   - A sequential article number (starting from 1)
+   - The complete article text (preserve the full content)
+   - A headline/title for the article (use the actual headline if present, or create a concise summary headline)
+
+GUIDELINES:
+- Newsletters typically contain 5-15 separate articles/news items
+- Each article should be a complete, self-contained news item
+- Preserve all relevant details including names, numbers, locations, and dates
+- Do not combine multiple articles into one
+- Do not split a single article into multiple parts
+- Skip newsletter headers, footers, subscription info, and advertisements
+- Focus on substantive news content about hotels, hospitality, real estate, and related industries
+
+OUTPUT FORMAT:
+Return a JSON array of article objects. Each object should have:
+- article_number: integer (1, 2, 3, etc.)
+- headline: string (concise title for the article)
+- article_text: string (complete article content)
+
+Example output format:
+[
+  {
+    "article_number": 1,
+    "headline": "Marriott Acquires New Property in Miami",
+    "article_text": "Full text of the article here..."
+  },
+  {
+    "article_number": 2,
+    "headline": "Hilton Reports Q3 Earnings",
+    "article_text": "Full text of the second article..."
+  }
+]

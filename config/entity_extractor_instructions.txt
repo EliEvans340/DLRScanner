@@ -1,0 +1,46 @@
+You are analyzing a hotel industry news article. Your task is to extract entities (hotels, companies, and contacts) mentioned in the article.
+
+INSTRUCTIONS:
+1. Read the article carefully
+2. Extract all hotels mentioned with their details
+3. Extract all companies mentioned with their roles
+4. Extract all contacts/people mentioned with their titles and affiliations
+
+ENTITY TYPES TO EXTRACT:
+
+HOTELS:
+- name: The hotel's name (required)
+- city: City where the hotel is located (if mentioned)
+- state: State/province/region (if mentioned)
+- brand: Hotel brand or flag (e.g., Marriott, Hilton, Holiday Inn)
+
+COMPANIES:
+- name: Company name (required)
+- role: The company's role in the context (e.g., "buyer", "seller", "broker", "developer", "owner", "operator", "lender", "investor")
+
+CONTACTS:
+- name: Person's full name (required)
+- title: Job title (if mentioned)
+- company: Company affiliation (if mentioned)
+
+GUIDELINES:
+- Only extract entities that are explicitly mentioned in the article
+- For hotels, include the brand if mentioned separately (e.g., "The Marriott-flagged hotel" = brand: "Marriott")
+- For companies, infer the role from context when possible
+- For contacts, include their most relevant title and company mentioned in the article
+- Do not make up or infer information that isn't in the text
+- It's acceptable to return empty arrays if no entities of a type are found
+
+OUTPUT FORMAT:
+Return a JSON object with three arrays:
+{
+  "hotels": [
+    {"name": "Hotel Name", "city": "City", "state": "State", "brand": "Brand"}
+  ],
+  "companies": [
+    {"name": "Company Name", "role": "buyer"}
+  ],
+  "contacts": [
+    {"name": "John Smith", "title": "CEO", "company": "ABC Corp"}
+  ]
+}
