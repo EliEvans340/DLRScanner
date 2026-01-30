@@ -22,18 +22,31 @@ class ArticlePreparator:
         "Companies": "company_entry_ids",    # Multi-Reference to Company Entry IDs
         "Contacts": "contact_entry_ids",     # Multi-Reference to Contact Entry IDs
         "Source": "source_subject",          # Newsletter subject
-        "PublishDate": "source_date"         # Newsletter date
+        "PublishDate": "source_date",        # Newsletter date
+        "Type": "article_type"               # Article type: "Actual" or "Testing"
     }
 
-    def __init__(self, logger=None):
+    def __init__(self, article_type=None, logger=None):
         """
         Initialize the Article Preparator.
 
         Args:
+            article_type: Type of article - "Actual" or "Testing" (default from ARTICLE_TYPE env var or "Testing")
             logger: Optional logger instance
         """
         load_dotenv()
         self.logger = logger or self._setup_logging()
+
+        # Set article type (default to "Testing" for safety)
+        if article_type is None:
+            article_type = os.getenv('ARTICLE_TYPE', 'Testing')
+
+        if article_type not in ['Actual', 'Testing']:
+            self.logger.warning(f"Invalid article_type '{article_type}', defaulting to 'Testing'")
+            article_type = 'Testing'
+
+        self.article_type = article_type
+        self.logger.info(f"Article type set to: {self.article_type}")
 
     def _setup_logging(self):
         """Set up logging for the preparator."""
@@ -119,7 +132,8 @@ class ArticlePreparator:
             "Companies": self._filter_valid_ids(article.get("company_entry_ids", [])),
             "Contacts": self._filter_valid_ids(article.get("contact_entry_ids", [])),
             "Source": article.get("source_subject", ""),
-            "PublishDate": self._parse_date(article.get("source_date"))
+            "PublishDate": self._parse_date(article.get("source_date")),
+            "Type": self.article_type
         }
 
         # Add metadata for tracking (not uploaded to DealCloud)

@@ -7,7 +7,7 @@ and prepares Article records.
 """
 
 from .dlr_scanner import DLRScanner
-from .mailgun_fetcher import MailgunFetcher, fetch_newsletters
+from .gmx_fetcher import GmxFetcher, fetch_newsletters
 from .newsletter_parser import NewsletterParser, parse_newsletter_email
 from .entity_extractor import EntityExtractor, extract_article_entities
 from .validation_orchestrator import ValidationOrchestrator
@@ -18,7 +18,7 @@ __version__ = "1.0.0"
 
 __all__ = [
     "DLRScanner",
-    "MailgunFetcher",
+    "GmxFetcher",
     "fetch_newsletters",
     "NewsletterParser",
     "parse_newsletter_email",
