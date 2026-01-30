@@ -19,26 +19,44 @@ from dotenv import load_dotenv
 # Add src directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mailgun_fetcher import MailgunFetcher
+from gmx_fetcher import GmxFetcher
 from newsletter_parser import NewsletterParser
+from newsletter_parser_deterministic import DeterministicNewsletterParser
 from entity_extractor import EntityExtractor
 from validation_orchestrator import ValidationOrchestrator
 from article_preparator import ArticlePreparator
 from report_generator import ReportGenerator
+from dealcloud_uploader import DealCloudUploader
 
 
 class DLRScanner:
     """Main orchestrator for the DLRScanner pipeline."""
 
-    def __init__(self, logger=None):
+    def __init__(self, use_deterministic_parser=None, batch_size=None, article_type=None, logger=None):
         """
         Initialize DLRScanner with all components.
 
         Args:
+            use_deterministic_parser: Use pattern-based parser (default: True, or from env)
+            batch_size: Number of articles per batch for entity extraction (default: 10, or from env)
+            article_type: Type of articles - "Actual" or "Testing" (default from ARTICLE_TYPE env var or "Testing")
             logger: Optional logger instance
         """
         load_dotenv()
         self.logger = logger or self._setup_logging()
+
+        # Configuration
+        if use_deterministic_parser is None:
+            use_deterministic_parser = os.getenv('USE_DETERMINISTIC_PARSER', 'true').lower() == 'true'
+        self.use_deterministic_parser = use_deterministic_parser
+
+        if batch_size is None:
+            batch_size = int(os.getenv('ENTITY_EXTRACTION_BATCH_SIZE', '10'))
+        self.batch_size = batch_size
+
+        if article_type is None:
+            article_type = os.getenv('ARTICLE_TYPE', 'Testing')
+        self.article_type = article_type
 
         # Initialize components lazily
         self._fetcher = None
@@ -47,6 +65,7 @@ class DLRScanner:
         self._validator = None
         self._preparator = None
         self._reporter = None
+        self._uploader = None
 
     def _setup_logging(self):
         """Set up logging for the scanner."""
@@ -76,13 +95,18 @@ class DLRScanner:
     @property
     def fetcher(self):
         if self._fetcher is None:
-            self._fetcher = MailgunFetcher(logger=self.logger)
+            self._fetcher = GmxFetcher(logger=self.logger)
         return self._fetcher
 
     @property
     def parser(self):
         if self._parser is None:
-            self._parser = NewsletterParser(logger=self.logger)
+            if self.use_deterministic_parser:
+                self._parser = DeterministicNewsletterParser(logger=self.logger)
+                self.logger.info("Using deterministic (pattern-based) newsletter parser")
+            else:
+                self._parser = NewsletterParser(logger=self.logger)
+                self.logger.info("Using AI-based newsletter parser")
         return self._parser
 
     @property
@@ -100,7 +124,7 @@ class DLRScanner:
     @property
     def preparator(self):
         if self._preparator is None:
-            self._preparator = ArticlePreparator(logger=self.logger)
+            self._preparator = ArticlePreparator(article_type=self.article_type, logger=self.logger)
         return self._preparator
 
     @property
@@ -109,6 +133,12 @@ class DLRScanner:
             self._reporter = ReportGenerator(logger=self.logger)
         return self._reporter
 
+    @property
+    def uploader(self):
+        if self._uploader is None:
+            self._uploader = DealCloudUploader(logger=self.logger)
+        return self._uploader
+
     def run(
         self,
         days_back=None,
@@ -116,7 +146,8 @@ class DLRScanner:
         sender_filter=None,
         skip_validation=False,
         output_path=None,
-        save_report=True
+        save_report=True,
+        upload=False
     ):
         """
         Run the full DLRScanner pipeline.
@@ -128,6 +159,7 @@ class DLRScanner:
             skip_validation: Skip entity validation step
             output_path: Path for output JSON file
             save_report: Whether to save processing report
+            upload: Upload articles to DealCloud
 
         Returns:
             Tuple of (prepared_articles, report)
@@ -181,8 +213,8 @@ class DLRScanner:
             return [], report
 
         # Step 3: Extract entities from articles
-        self.logger.info("Step 3: Extracting entities from articles")
-        articles_with_entities = self.extractor.extract_from_articles(articles)
+        self.logger.info(f"Step 3: Extracting entities from articles (batch_size={self.batch_size})")
+        articles_with_entities = self.extractor.extract_from_articles_batched(articles, batch_size=self.batch_size)
         extractor_stats = self.extractor.get_stats()
         self.logger.info(f"Entity extraction complete")
 
@@ -215,9 +247,28 @@ class DLRScanner:
         export_path = self.preparator.export_to_json(prepared_articles, output_path)
         self.logger.info(f"Exported articles to {export_path}")
 
-        # Step 6: Generate report
+        # Step 6: Upload to DealCloud (optional)
+        upload_stats = None
+        if upload:
+            self.logger.info("Step 6: Uploading articles to DealCloud")
+            try:
+                upload_stats = self.uploader.upload_articles(prepared_articles)
+                self.logger.info(f"Upload complete: {upload_stats['uploaded']}/{upload_stats['total_articles']} articles uploaded")
+            except Exception as e:
+                self.logger.error(f"Upload failed: {str(e)}")
+                upload_stats = {
+                    'total_articles': len(prepared_articles),
+                    'uploaded': 0,
+                    'failed': len(prepared_articles),
+                    'entry_ids': [],
+                    'success_rate': 0,
+                    'error': str(e)
+                }
+
+        # Step 7: Generate report
         end_time = datetime.now()
-        self.logger.info("Step 6: Generating report")
+        step_num = 7 if upload else 6
+        self.logger.info(f"Step {step_num}: Generating report")
 
         report = self.reporter.generate_processing_report(
             emails_fetched=emails_fetched,
@@ -226,7 +277,8 @@ class DLRScanner:
             validation_summary=validation_summary,
             prepared_summary=prepared_summary,
             start_time=start_time,
-            end_time=end_time
+            end_time=end_time,
+            upload_stats=upload_stats
         )
 
         if save_report:
@@ -285,17 +337,45 @@ def main():
         action='store_true',
         help='Do not save processing report'
     )
+    parser.add_argument(
+        '--use-ai-parser',
+        action='store_true',
+        help='Use AI-based parser instead of deterministic parser'
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=None,
+        help='Number of articles per batch for entity extraction (default: 10)'
+    )
+    parser.add_argument(
+        '--type',
+        type=str,
+        choices=['Actual', 'Testing'],
+        default=None,
+        help='Article type: "Actual" for production, "Testing" for test data (default: from ARTICLE_TYPE env var or "Testing")'
+    )
+    parser.add_argument(
+        '--upload',
+        action='store_true',
+        help='Upload articles to DealCloud after processing'
+    )
 
     args = parser.parse_args()
 
     # Run the scanner
-    scanner = DLRScanner()
+    scanner = DLRScanner(
+        use_deterministic_parser=not args.use_ai_parser,
+        batch_size=args.batch_size,
+        article_type=args.type
+    )
     articles, report = scanner.run(
         days_back=args.days_back,
         limit=args.limit,
         skip_validation=args.no_validate,
         output_path=args.output,
-        save_report=not args.no_report
+        save_report=not args.no_report,
+        upload=args.upload
     )
 
     return 0 if articles else 1

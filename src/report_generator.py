@@ -49,7 +49,8 @@ class ReportGenerator:
         validation_summary,
         prepared_summary,
         start_time,
-        end_time
+        end_time,
+        upload_stats=None
     ):
         """
         Generate a comprehensive processing report.
@@ -62,6 +63,7 @@ class ReportGenerator:
             prepared_summary: Summary from ArticlePreparator
             start_time: Processing start time
             end_time: Processing end time
+            upload_stats: Optional stats from DealCloudUploader
 
         Returns:
             Report dict
@@ -83,6 +85,9 @@ class ReportGenerator:
             "validation": validation_summary,
             "article_preparation": prepared_summary
         }
+
+        if upload_stats:
+            report["dealcloud_upload"] = upload_stats
 
         return report
 
@@ -170,6 +175,19 @@ class ReportGenerator:
             for src in ap.get('unique_sources', []):
                 lines.append(f"    - {src[:60]}...")
         lines.append("")
+
+        # DealCloud upload (if performed)
+        upload = report.get("dealcloud_upload")
+        if upload:
+            lines.append("DEALCLOUD UPLOAD")
+            lines.append("-" * 40)
+            lines.append(f"  Total Articles:     {upload.get('total_articles', 0)}")
+            lines.append(f"  Successfully Uploaded: {upload.get('uploaded', 0)}")
+            lines.append(f"  Failed:             {upload.get('failed', 0)}")
+            lines.append(f"  Success Rate:       {upload.get('success_rate', 0):.1f}%")
+            if upload.get('error'):
+                lines.append(f"  Error: {upload.get('error')}")
+            lines.append("")
 
         lines.append("=" * 60)
 
