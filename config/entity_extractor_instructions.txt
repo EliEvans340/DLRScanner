@@ -1,18 +1,35 @@
-You are analyzing a hotel industry news article. Your task is to extract entities (hotels, companies, and contacts) mentioned in the article.
+You are analyzing hotel industry news articles. Your task is to extract entities (hotels, companies, and contacts) mentioned in the articles.
+
+=== CRITICAL: DEVELOPMENT PROJECTS ===
+BEFORE extracting ANY hotels from an article, you MUST determine:
+- Is this article about a hotel that is CURRENTLY OPERATING?
+- OR is it about a FUTURE/PLANNED/UNDER-CONSTRUCTION hotel?
+
+If the article is about DEVELOPMENT/CONSTRUCTION/CONVERSION (future hotels), return hotels: [] for that article.
+Only extract hotels that are already open and operating TODAY.
 
 INSTRUCTIONS:
-1. Read the article carefully
-2. Extract all hotels mentioned with their details
-3. Extract all companies mentioned with their roles
-4. Extract all contacts/people mentioned with their titles and affiliations
+1. You will receive one or more articles (up to 10 articles in batch mode)
+2. Read each article carefully
+3. FIRST, determine if the article is about a hotel development/construction project (if yes, set hotels: [])
+4. ONLY extract hotels that are CURRENTLY OPERATING (not planned, under construction, or converting)
+5. Extract all companies mentioned with their roles
+6. Extract all contacts/people mentioned with their titles and affiliations
+7. Return a JSON array with one object per article, maintaining article order
+
+BEFORE EXTRACTING ANY HOTEL, ASK YOURSELF:
+- Is this hotel currently open and operating? → Extract it
+- Is this a planned, future, or under-construction hotel? → DO NOT extract it (hotels: [])
 
 ENTITY TYPES TO EXTRACT:
 
 HOTELS:
-- name: The hotel's name (required)
+- name: The hotel's COMPLETE name including brand AND location identifier (required)
+  Examples: "Residence Inn Tulsa South", "Courtyard Lafayette Airport", "Hyatt Lodge Oak Brook"
+  NOT just the brand: "Residence Inn", "Courtyard", "Hyatt Lodge"
 - city: City where the hotel is located (if mentioned)
 - state: State/province/region (if mentioned)
-- brand: Hotel brand or flag (e.g., Marriott, Hilton, Holiday Inn)
+- brand: Hotel brand if identifiable (e.g., "Marriott", "Hyatt", "Hilton")
 
 COMPANIES:
 - name: Company name (required)
@@ -23,9 +40,20 @@ CONTACTS:
 - title: Job title (if mentioned)
 - company: Company affiliation (if mentioned)
 
-GUIDELINES:
+CRITICAL RULES FOR HOTEL EXTRACTION:
+
+1. ONLY extract hotels that are CURRENTLY OPERATING
+2. DO NOT extract hotels if the article mentions:
+   - "plans to", "will be", "to be converted", "under construction"
+   - "set to open", "scheduled to open", "expected to open"
+   - "proposed", "planned", "future", "development"
+   - Any future tense or未来时态 regarding the hotel opening
+3. If you are uncertain whether a hotel is operating or under development, DO NOT extract it
+4. Return an EMPTY hotels array if the article is only about development/construction projects
+
+OTHER GUIDELINES:
 - Only extract entities that are explicitly mentioned in the article
-- For hotels, include the brand if mentioned separately (e.g., "The Marriott-flagged hotel" = brand: "Marriott")
+- For hotels, extract the COMPLETE property name including location identifiers (e.g., "Residence Inn Tulsa South", not just "Residence Inn")
 - For companies, infer the role from context when possible
 - For contacts, include their most relevant title and company mentioned in the article
 - Do not make up or infer information that isn't in the text
@@ -35,7 +63,7 @@ OUTPUT FORMAT:
 Return a JSON object with three arrays:
 {
   "hotels": [
-    {"name": "Hotel Name", "city": "City", "state": "State", "brand": "Brand"}
+    {"name": "Residence Inn Tulsa South", "city": "Tulsa", "state": "Oklahoma", "brand": "Marriott"}
   ],
   "companies": [
     {"name": "Company Name", "role": "buyer"}
@@ -44,3 +72,27 @@ Return a JSON object with three arrays:
     {"name": "John Smith", "title": "CEO", "company": "ABC Corp"}
   ]
 }
+
+IMPORTANT EXAMPLES:
+
+CORRECT hotel extraction:
+- Article mentions "Residence Inn Tulsa South" → Extract: {"name": "Residence Inn Tulsa South", "city": "Tulsa", "state": "Oklahoma", "brand": "Marriott"}
+- Article mentions "Courtyard Lafayette Airport" → Extract: {"name": "Courtyard Lafayette Airport", "city": "Lafayette", "state": "Louisiana", "brand": "Marriott"}
+
+INCORRECT hotel extraction:
+- Article mentions "Residence Inn Tulsa South" → Extract: {"name": "Residence Inn"} ❌ (missing location identifier)
+- Article about "plans to convert office tower into JW Marriott" → Extract: {"hotels": [{"name": "JW Marriott"}]} ❌ WRONG!
+  CORRECT: {"hotels": []} because this is a DEVELOPMENT PROJECT, not an operating hotel
+- Article says "Set to open in 2027" → Extract: ANY hotels ❌ WRONG!
+  CORRECT: {"hotels": []} because the hotel is not yet open
+
+WHEN TO SKIP HOTELS (return empty hotels array):
+❌ "Developers are planning a new hotel..."
+❌ "The tower will be converted into a 418-room hotel..."
+❌ "Construction is underway on..."
+❌ "Set to open in late 2027..."
+❌ "Plans to turn the building into a JW Marriott"
+❌ "Secured franchise approval for the luxury hotel brand"
+❌ ANY article where the hotel does not yet exist or is not yet operating
+
+REMEMBER: If the article is about a FUTURE hotel (even if it has a brand name), return hotels: []

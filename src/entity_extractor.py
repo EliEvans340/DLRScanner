@@ -110,7 +110,7 @@ class EntityExtractor:
                 return f.read()
         except FileNotFoundError:
             return """Extract hotels, companies, and contacts from this article.
-Return JSON with: hotels (name, city, state, brand), companies (name, role), contacts (name, title, company)"""
+Return JSON with: hotels (name, city, state), companies (name, role), contacts (name, title, company)"""
         except Exception:
             return ""
 
@@ -127,10 +127,15 @@ Return JSON with: hotels (name, city, state, brand), companies (name, role), con
         headline = article.get('headline', 'Unknown')
         article_text = article.get('article_text', '')
 
+        # Fallback: use headline if article_text is empty (AI sometimes puts content in headline)
+        if not article_text and len(headline) > 200:
+            self.logger.info(f"Using headline as article text (length: {len(headline)})")
+            article_text = headline
+
         self.logger.info(f"Extracting entities from: {headline[:50]}...")
 
         if not article_text:
-            self.logger.warning(f"Empty article text for: {headline}")
+            self.logger.warning(f"Empty article text and short headline for: {headline}")
             return {
                 **article,
                 "hotels": [],
@@ -233,6 +238,164 @@ Return JSON with: hotels (name, city, state, brand), companies (name, role), con
         )
 
         return results
+
+    def extract_from_articles_batched(self, articles, batch_size=10):
+        """
+        Extract entities from multiple articles using batch processing.
+
+        This method processes articles in batches to reduce API calls.
+        Instead of 1 API call per article, it makes 1 call per batch_size articles.
+
+        Args:
+            articles: List of article dicts (from newsletter_parser)
+            batch_size: Number of articles to process in each batch (default: 10)
+
+        Returns:
+            List of articles with extracted entities
+        """
+        if not articles:
+            return []
+
+        results = []
+        total_articles = len(articles)
+
+        # Process articles in batches
+        for batch_start in range(0, total_articles, batch_size):
+            batch_end = min(batch_start + batch_size, total_articles)
+            batch = articles[batch_start:batch_end]
+
+            self.logger.info(
+                f"Processing batch {batch_start // batch_size + 1}: "
+                f"articles {batch_start + 1}-{batch_end} of {total_articles}"
+            )
+
+            batch_results = self._extract_entities_batch(batch)
+            results.extend(batch_results)
+
+        self.logger.info(
+            f"Batch entity extraction complete: {self.stats['articles_processed']} articles, "
+            f"{self.stats['hotels_extracted']} hotels, "
+            f"{self.stats['companies_extracted']} companies, "
+            f"{self.stats['contacts_extracted']} contacts"
+        )
+
+        return results
+
+    def _extract_entities_batch(self, articles_batch):
+        """
+        Extract entities from a batch of articles in a single API call.
+
+        Args:
+            articles_batch: List of article dicts to process together
+
+        Returns:
+            List of articles with extracted entities
+        """
+        if not articles_batch:
+            return []
+
+        # Build batch prompt
+        batch_prompt = self.instructions + "\n\nExtract entities from these articles:\n\n"
+
+        for i, article in enumerate(articles_batch, start=1):
+            headline = article.get('headline', 'Unknown')
+            article_text = article.get('article_text', '')
+
+            # Fallback: use headline if article_text is empty
+            if not article_text and len(headline) > 200:
+                article_text = headline
+
+            batch_prompt += f"ARTICLE {i}:\n"
+            batch_prompt += f"Headline: {headline}\n"
+            batch_prompt += f"Text: {article_text}\n\n"
+
+        batch_prompt += f"\nIMPORTANT: If an article is about a DEVELOPMENT/CONSTRUCTION project (not an operating hotel), return hotels: [] for that article.\n"
+        batch_prompt += f"Return a JSON array of {len(articles_batch)} objects, one per article, in the same order."
+
+        try:
+            response = self.model.generate_content(
+                batch_prompt,
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    response_schema=list[ArticleEntities]
+                )
+            )
+
+            if not response.text or not response.text.strip():
+                self.logger.warning(f"Empty response for batch of {len(articles_batch)} articles")
+                # Return articles with empty entities
+                return [
+                    {**article, "hotels": [], "companies": [], "contacts": []}
+                    for article in articles_batch
+                ]
+
+            entities_list = json.loads(response.text)
+
+            if not isinstance(entities_list, list):
+                self.logger.error(f"Unexpected response format (not a list) for batch")
+                self.stats["failed_processing"] += len(articles_batch)
+                return [
+                    {**article, "hotels": [], "companies": [], "contacts": []}
+                    for article in articles_batch
+                ]
+
+            # Map entities back to articles
+            results = []
+            for i, article in enumerate(articles_batch):
+                if i < len(entities_list):
+                    entities = entities_list[i]
+                    hotels = entities.get('hotels', [])
+                    companies = entities.get('companies', [])
+                    contacts = entities.get('contacts', [])
+
+                    # Update statistics
+                    self.stats["articles_processed"] += 1
+                    self.stats["hotels_extracted"] += len(hotels)
+                    self.stats["companies_extracted"] += len(companies)
+                    self.stats["contacts_extracted"] += len(contacts)
+
+                    headline = article.get('headline', 'Unknown')
+                    self.logger.info(
+                        f"Extracted from '{headline[:30]}...': "
+                        f"{len(hotels)} hotels, {len(companies)} companies, {len(contacts)} contacts"
+                    )
+
+                    results.append({
+                        **article,
+                        "hotels": hotels,
+                        "companies": companies,
+                        "contacts": contacts
+                    })
+                else:
+                    # Missing response for this article
+                    self.logger.warning(f"Missing entity data for article {i + 1} in batch")
+                    self.stats["failed_processing"] += 1
+                    results.append({
+                        **article,
+                        "hotels": [],
+                        "companies": [],
+                        "contacts": []
+                    })
+
+            return results
+
+        except json.JSONDecodeError as e:
+            self.logger.error(f"JSON parsing error for batch: {e}")
+            self.logger.error(traceback.format_exc())
+            self.stats["failed_processing"] += len(articles_batch)
+            return [
+                {**article, "hotels": [], "companies": [], "contacts": []}
+                for article in articles_batch
+            ]
+
+        except Exception as e:
+            self.logger.error(f"Error extracting entities from batch: {e}")
+            self.logger.error(traceback.format_exc())
+            self.stats["failed_processing"] += len(articles_batch)
+            return [
+                {**article, "hotels": [], "companies": [], "contacts": []}
+                for article in articles_batch
+            ]
 
     def get_stats(self):
         """Get extraction statistics."""
