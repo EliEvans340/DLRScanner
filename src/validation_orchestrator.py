@@ -1,8 +1,10 @@
 """
 Validation Orchestrator for DLRScanner
 
-Orchestrates entity validation using AWHEmailScanner validators.
-Transforms DLRScanner article data to validator format and maps results back.
+Orchestrates entity validation using AWHEmailScanner embedding-based validators.
+- Hotels: Two-stage validator with LLM verification for medium confidence matches
+- Companies: Cached embedding validator with similarity threshold
+- Contacts: Cached embedding validator with similarity threshold
 """
 
 import os
@@ -36,10 +38,11 @@ class ValidationOrchestrator:
         self.data_path = os.getenv('VALIDATION_DATA_PATH', '../AWHEmailScanner/data')
         self.data_path = os.path.abspath(self.data_path)
 
-        # Import validators lazily to handle path setup
+        # Cached validator instances (loaded lazily, kept in memory for reuse)
         self._hotel_validator = None
         self._company_validator = None
         self._contact_validator = None
+        self._validators_initialized = False
 
     def _setup_logging(self):
         """Set up logging for the orchestrator."""
@@ -58,40 +61,72 @@ class ValidationOrchestrator:
 
         return logger
 
-    def _import_validators(self):
-        """Import validator modules from AWHEmailScanner."""
+    def _initialize_validators(self):
+        """Initialize cached embedding validators from AWHEmailScanner."""
+        if self._validators_initialized:
+            return
+
+        self.logger.info("Initializing cached embedding validators...")
+
+        # Initialize hotel validator (two-stage with LLM verification)
         try:
-            from hotel_validator_v2 import validate_hotels_v2
-            self._hotel_validator = validate_hotels_v2
-            self.logger.info("Imported hotel_validator_v2")
+            from hotel_validator_two_stage import TwoStageHotelValidator
+            embeddings_path = os.path.join(self.data_path, "hotel_embeddings.json")
+            self._hotel_validator = TwoStageHotelValidator(
+                embeddings_file_path=embeddings_path,
+                logger=self.logger
+            )
+            self.logger.info("Initialized TwoStageHotelValidator with embeddings")
         except ImportError as e:
-            self.logger.warning(f"Could not import hotel_validator_v2: {e}")
+            self.logger.warning(f"Could not import hotel_validator_two_stage: {e}")
+            self._hotel_validator = None
+        except Exception as e:
+            self.logger.error(f"Error initializing hotel validator: {e}")
             self._hotel_validator = None
 
+        # Initialize company validator
         try:
-            from company_validator import validate_companies
-            self._company_validator = validate_companies
-            self.logger.info("Imported company_validator")
+            from company_validator_embedding_cached import CachedCompanyValidatorWithEmbeddings
+            embeddings_path = os.path.join(self.data_path, "company_embeddings.json")
+            self._company_validator = CachedCompanyValidatorWithEmbeddings(
+                embeddings_file_path=embeddings_path,
+                logger=self.logger
+            )
+            self.logger.info("Initialized CachedCompanyValidatorWithEmbeddings")
         except ImportError as e:
-            self.logger.warning(f"Could not import company_validator: {e}")
+            self.logger.warning(f"Could not import company_validator_embedding_cached: {e}")
+            self._company_validator = None
+        except Exception as e:
+            self.logger.error(f"Error initializing company validator: {e}")
             self._company_validator = None
 
+        # Initialize contact validator
         try:
-            from contact_validator import validate_contacts
-            self._contact_validator = validate_contacts
-            self.logger.info("Imported contact_validator")
+            from contact_validator_embedding_cached import CachedContactValidatorWithEmbeddings
+            embeddings_path = os.path.join(self.data_path, "contact_embeddings.json")
+            self._contact_validator = CachedContactValidatorWithEmbeddings(
+                embeddings_file_path=embeddings_path,
+                logger=self.logger
+            )
+            self.logger.info("Initialized CachedContactValidatorWithEmbeddings")
         except ImportError as e:
-            self.logger.warning(f"Could not import contact_validator: {e}")
+            self.logger.warning(f"Could not import contact_validator_embedding_cached: {e}")
             self._contact_validator = None
+        except Exception as e:
+            self.logger.error(f"Error initializing contact validator: {e}")
+            self._contact_validator = None
+
+        self._validators_initialized = True
+        self.logger.info("Validator initialization complete")
 
     def _transform_to_validator_format(self, articles):
         """
-        Transform DLRScanner articles to AWHEmailScanner validator format.
+        Transform DLRScanner articles to cached embedding validator format.
 
-        AWHEmailScanner validators expect:
+        Cached embedding validators expect:
         - hotel_details: [{name, city, state, brand, keys, address}]
-        - brokerage_company: [company_names]
-        - brokers: [contact_names]
+        - company_details: [{name}]
+        - contact_details: [{name}]
 
         Args:
             articles: List of article dicts with hotels, companies, contacts
@@ -103,7 +138,7 @@ class ValidationOrchestrator:
 
         for article in articles:
             result = {
-                # Original article data
+                # Original article data (preserved for mapping back)
                 "article_number": article.get("article_number"),
                 "headline": article.get("headline"),
                 "article_text": article.get("article_text"),
@@ -124,9 +159,10 @@ class ValidationOrchestrator:
                     for h in article.get("hotels", [])
                 ],
 
-                # Transform companies to brokerage_company format
-                "brokerage_company": [
-                    c.get("name", "") for c in article.get("companies", [])
+                # Transform companies to company_details format (for embedding validator)
+                "company_details": [
+                    {"name": c.get("name", "")}
+                    for c in article.get("companies", [])
                 ],
 
                 # Store company roles separately for reference
@@ -134,13 +170,14 @@ class ValidationOrchestrator:
                     c.get("role", "") for c in article.get("companies", [])
                 ],
 
-                # Transform contacts to brokers format
-                "brokers": [
-                    c.get("name", "") for c in article.get("contacts", [])
+                # Transform contacts to contact_details format (for embedding validator)
+                "contact_details": [
+                    {"name": c.get("name", "")}
+                    for c in article.get("contacts", [])
                 ],
 
                 # Store contact details separately for reference
-                "_contact_details": [
+                "_contact_metadata": [
                     {"title": c.get("title", ""), "company": c.get("company", "")}
                     for c in article.get("contacts", [])
                 ]
@@ -174,8 +211,8 @@ class ValidationOrchestrator:
             company_entry_ids = validated.get("Company - Entry ID", [])
             article["company_entry_ids"] = company_entry_ids
 
-            # Map contact Entry IDs (validators use "Broker - Entry ID")
-            contact_entry_ids = validated.get("Broker - Entry ID", [])
+            # Map contact Entry IDs (cached validator uses "Contact - Entry ID")
+            contact_entry_ids = validated.get("Contact - Entry ID", [])
             article["contact_entry_ids"] = contact_entry_ids
 
             output.append(article)
@@ -184,7 +221,14 @@ class ValidationOrchestrator:
 
     def validate_articles(self, articles):
         """
-        Validate entities in articles using AWHEmailScanner validators.
+        Validate entities in articles using embedding-based validators.
+
+        Hotels use two-stage validation:
+        - Stage 1: Embedding similarity + token overlap scoring
+        - Stage 2: Auto-accept high confidence, auto-reject low confidence
+        - Stage 3: LLM verification with top-3 candidates for medium confidence
+
+        Companies and contacts use cached embedding validators with 0.55 threshold.
 
         Args:
             articles: List of article dicts with hotels, companies, contacts
@@ -192,29 +236,27 @@ class ValidationOrchestrator:
         Returns:
             Articles with validated Entry IDs added
         """
-        self.logger.info(f"Starting validation for {len(articles)} articles")
+        self.logger.info(f"Starting embedding-based validation for {len(articles)} articles")
 
-        # Import validators if not done yet
-        if self._hotel_validator is None and self._company_validator is None:
-            self._import_validators()
+        # Initialize validators if not done yet
+        if not self._validators_initialized:
+            self._initialize_validators()
 
         # Transform to validator format
         validator_data = self._transform_to_validator_format(articles)
         self.logger.info("Transformed articles to validator format")
 
-        # Validate hotels
+        # Validate hotels (two-stage with LLM verification for medium confidence)
         if self._hotel_validator:
             try:
-                embeddings_path = os.path.join(self.data_path, "hotel_embeddings.json")
-                validator_data = self._hotel_validator(
-                    validator_data,
-                    self.logger,
-                    embeddings_file_path=embeddings_path
+                validator_data, hotel_stats = self._hotel_validator.validate_hotels_two_stage(
+                    validator_data
                 )
                 self.logger.info("Hotel validation complete")
             except Exception as e:
                 self.logger.error(f"Hotel validation error: {e}")
-                # Initialize empty Entry IDs
+                import traceback
+                self.logger.error(traceback.format_exc())
                 for result in validator_data:
                     if "Hotel - Entry ID" not in result:
                         result["Hotel - Entry ID"] = [None] * len(result.get("hotel_details", []))
@@ -226,43 +268,40 @@ class ValidationOrchestrator:
         # Validate companies
         if self._company_validator:
             try:
-                # Company validator expects data file at data/company_data.csv
-                original_cwd = os.getcwd()
-                os.chdir(os.path.dirname(self.data_path) or '.')
-
-                validator_data = self._company_validator(validator_data, self.logger)
+                validator_data = self._company_validator.match_companies_with_embeddings_batched(
+                    validator_data
+                )
                 self.logger.info("Company validation complete")
-
-                os.chdir(original_cwd)
             except Exception as e:
                 self.logger.error(f"Company validation error: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
                 for result in validator_data:
                     if "Company - Entry ID" not in result:
-                        result["Company - Entry ID"] = [None] * len(result.get("brokerage_company", []))
+                        result["Company - Entry ID"] = [None] * len(result.get("company_details", []))
         else:
             self.logger.warning("Company validator not available")
             for result in validator_data:
-                result["Company - Entry ID"] = [None] * len(result.get("brokerage_company", []))
+                result["Company - Entry ID"] = [None] * len(result.get("company_details", []))
 
         # Validate contacts
         if self._contact_validator:
             try:
-                original_cwd = os.getcwd()
-                os.chdir(os.path.dirname(self.data_path) or '.')
-
-                validator_data = self._contact_validator(validator_data, self.logger)
+                validator_data = self._contact_validator.match_contacts_with_embeddings_batched(
+                    validator_data
+                )
                 self.logger.info("Contact validation complete")
-
-                os.chdir(original_cwd)
             except Exception as e:
                 self.logger.error(f"Contact validation error: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
                 for result in validator_data:
-                    if "Broker - Entry ID" not in result:
-                        result["Broker - Entry ID"] = [None] * len(result.get("brokers", []))
+                    if "Contact - Entry ID" not in result:
+                        result["Contact - Entry ID"] = [None] * len(result.get("contact_details", []))
         else:
             self.logger.warning("Contact validator not available")
             for result in validator_data:
-                result["Broker - Entry ID"] = [None] * len(result.get("brokers", []))
+                result["Contact - Entry ID"] = [None] * len(result.get("contact_details", []))
 
         # Map results back to article format
         validated_articles = self._map_validation_results(validator_data, articles)

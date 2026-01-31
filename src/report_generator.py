@@ -8,6 +8,7 @@ import os
 import json
 import logging
 from datetime import datetime
+from typing import Dict, Any, Tuple
 from dotenv import load_dotenv
 
 
@@ -228,6 +229,258 @@ class ReportGenerator:
             report: Report dict
         """
         print(self.format_report_text(report))
+
+    def generate_bulk_parse_report(
+        self,
+        stats: Dict[str, Any],
+        output_path: str = "logs"
+    ) -> Tuple[str, str]:
+        """
+        Generate report for bulk parse phase.
+
+        Args:
+            stats: Statistics dict from bulk parsing
+            output_path: Output directory
+
+        Returns:
+            Tuple of (json_path, text_path)
+        """
+        report = {
+            "report_type": "bulk_parse",
+            "report_generated_at": datetime.now().isoformat(),
+            "processing_summary": {
+                "start_time": stats.get('start_time', ''),
+                "end_time": stats.get('end_time', ''),
+                "duration_seconds": stats.get('duration_seconds', 0)
+            },
+            "file_processing": {
+                "total_files": stats.get('total_files', 0),
+                "processed_files": stats.get('processed_files', 0),
+                "failed_files": stats.get('failed_files', 0),
+                "skipped_files": stats.get('skipped_files', 0)
+            },
+            "article_extraction": {
+                "articles_extracted": stats.get('articles_extracted', 0),
+                "articles_with_entities": stats.get('articles_with_entities', 0)
+            },
+            "entity_extraction": {
+                "hotels_extracted": stats.get('hotels_extracted', 0),
+                "companies_extracted": stats.get('companies_extracted', 0),
+                "contacts_extracted": stats.get('contacts_extracted', 0)
+            },
+            "validation": {
+                "hotels_matched": stats.get('hotels_matched', 0),
+                "companies_matched": stats.get('companies_matched', 0),
+                "contacts_matched": stats.get('contacts_matched', 0),
+                "hotel_match_rate": stats.get('hotel_match_rate', 0),
+                "company_match_rate": stats.get('company_match_rate', 0),
+                "contact_match_rate": stats.get('contact_match_rate', 0)
+            },
+            "output": {
+                "output_file": stats.get('output_file', ''),
+                "checkpoint_file": stats.get('checkpoint_file', '')
+            }
+        }
+
+        if stats.get('failed_file_details'):
+            report['failed_files'] = stats['failed_file_details']
+
+        # Save report
+        os.makedirs(output_path, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        json_path = os.path.join(output_path, f"bulk_parse_report_{timestamp}.json")
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+
+        text_path = os.path.join(output_path, f"bulk_parse_report_{timestamp}.txt")
+        with open(text_path, 'w', encoding='utf-8') as f:
+            f.write(self._format_bulk_parse_report(report))
+
+        self.logger.info(f"Bulk parse report saved to {json_path} and {text_path}")
+        return json_path, text_path
+
+    def _format_bulk_parse_report(self, report: Dict[str, Any]) -> str:
+        """Format bulk parse report as text."""
+        lines = []
+        lines.append("=" * 70)
+        lines.append("DLRScanner Bulk Parse Report")
+        lines.append("=" * 70)
+        lines.append("")
+
+        # Processing summary
+        ps = report.get("processing_summary", {})
+        lines.append("PROCESSING SUMMARY")
+        lines.append("-" * 50)
+        lines.append(f"  Start Time:     {ps.get('start_time', 'N/A')}")
+        lines.append(f"  End Time:       {ps.get('end_time', 'N/A')}")
+        lines.append(f"  Duration:       {ps.get('duration_seconds', 0):.2f} seconds")
+        lines.append("")
+
+        # File processing
+        fp = report.get("file_processing", {})
+        lines.append("FILE PROCESSING")
+        lines.append("-" * 50)
+        lines.append(f"  Total Files:      {fp.get('total_files', 0)}")
+        lines.append(f"  Processed:        {fp.get('processed_files', 0)}")
+        lines.append(f"  Failed:           {fp.get('failed_files', 0)}")
+        lines.append(f"  Skipped:          {fp.get('skipped_files', 0)}")
+        lines.append("")
+
+        # Article extraction
+        ae = report.get("article_extraction", {})
+        lines.append("ARTICLE EXTRACTION")
+        lines.append("-" * 50)
+        lines.append(f"  Articles Extracted:       {ae.get('articles_extracted', 0)}")
+        lines.append(f"  Articles with Entities:   {ae.get('articles_with_entities', 0)}")
+        lines.append("")
+
+        # Entity extraction
+        ee = report.get("entity_extraction", {})
+        lines.append("ENTITY EXTRACTION")
+        lines.append("-" * 50)
+        lines.append(f"  Hotels Extracted:    {ee.get('hotels_extracted', 0)}")
+        lines.append(f"  Companies Extracted: {ee.get('companies_extracted', 0)}")
+        lines.append(f"  Contacts Extracted:  {ee.get('contacts_extracted', 0)}")
+        lines.append("")
+
+        # Validation
+        v = report.get("validation", {})
+        lines.append("VALIDATION RESULTS")
+        lines.append("-" * 50)
+        lines.append(f"  Hotels Matched:    {v.get('hotels_matched', 0)} ({v.get('hotel_match_rate', 0)*100:.1f}%)")
+        lines.append(f"  Companies Matched: {v.get('companies_matched', 0)} ({v.get('company_match_rate', 0)*100:.1f}%)")
+        lines.append(f"  Contacts Matched:  {v.get('contacts_matched', 0)} ({v.get('contact_match_rate', 0)*100:.1f}%)")
+        lines.append("")
+
+        # Output files
+        out = report.get("output", {})
+        lines.append("OUTPUT FILES")
+        lines.append("-" * 50)
+        lines.append(f"  Articles JSON:  {out.get('output_file', 'N/A')}")
+        lines.append(f"  Checkpoint:     {out.get('checkpoint_file', 'N/A')}")
+        lines.append("")
+
+        # Failed files (if any)
+        if report.get('failed_files'):
+            lines.append("FAILED FILES")
+            lines.append("-" * 50)
+            for fail in report['failed_files'][:20]:  # Limit to first 20
+                lines.append(f"  {fail.get('path', 'Unknown')}: {fail.get('error', 'Unknown error')}")
+            if len(report['failed_files']) > 20:
+                lines.append(f"  ... and {len(report['failed_files']) - 20} more")
+            lines.append("")
+
+        lines.append("=" * 70)
+        return "\n".join(lines)
+
+    def generate_bulk_upload_report(
+        self,
+        stats: Dict[str, Any],
+        output_path: str = "logs"
+    ) -> Tuple[str, str]:
+        """
+        Generate report for bulk upload phase.
+
+        Args:
+            stats: Statistics dict from bulk upload
+            output_path: Output directory
+
+        Returns:
+            Tuple of (json_path, text_path)
+        """
+        report = {
+            "report_type": "bulk_upload",
+            "report_generated_at": datetime.now().isoformat(),
+            "processing_summary": {
+                "start_time": stats.get('start_time', ''),
+                "end_time": stats.get('end_time', ''),
+                "duration_seconds": stats.get('duration_seconds', 0)
+            },
+            "upload_statistics": {
+                "total_articles": stats.get('total_articles', 0),
+                "uploaded": stats.get('uploaded', 0),
+                "failed": stats.get('failed', 0),
+                "success_rate": stats.get('success_rate', 0),
+                "total_batches": stats.get('total_batches', 0),
+                "batches_completed": stats.get('batches_completed', 0),
+                "batches_failed": stats.get('batches_failed', 0)
+            },
+            "input": {
+                "input_file": stats.get('input_file', ''),
+                "checkpoint_file": stats.get('checkpoint_file', '')
+            }
+        }
+
+        if stats.get('failed_batches'):
+            report['failed_batches'] = stats['failed_batches']
+
+        # Save report
+        os.makedirs(output_path, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        json_path = os.path.join(output_path, f"bulk_upload_report_{timestamp}.json")
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+
+        text_path = os.path.join(output_path, f"bulk_upload_report_{timestamp}.txt")
+        with open(text_path, 'w', encoding='utf-8') as f:
+            f.write(self._format_bulk_upload_report(report))
+
+        self.logger.info(f"Bulk upload report saved to {json_path} and {text_path}")
+        return json_path, text_path
+
+    def _format_bulk_upload_report(self, report: Dict[str, Any]) -> str:
+        """Format bulk upload report as text."""
+        lines = []
+        lines.append("=" * 70)
+        lines.append("DLRScanner Bulk Upload Report")
+        lines.append("=" * 70)
+        lines.append("")
+
+        # Processing summary
+        ps = report.get("processing_summary", {})
+        lines.append("PROCESSING SUMMARY")
+        lines.append("-" * 50)
+        lines.append(f"  Start Time:     {ps.get('start_time', 'N/A')}")
+        lines.append(f"  End Time:       {ps.get('end_time', 'N/A')}")
+        lines.append(f"  Duration:       {ps.get('duration_seconds', 0):.2f} seconds")
+        lines.append("")
+
+        # Upload statistics
+        us = report.get("upload_statistics", {})
+        lines.append("UPLOAD STATISTICS")
+        lines.append("-" * 50)
+        lines.append(f"  Total Articles:       {us.get('total_articles', 0)}")
+        lines.append(f"  Successfully Uploaded: {us.get('uploaded', 0)}")
+        lines.append(f"  Failed:               {us.get('failed', 0)}")
+        lines.append(f"  Success Rate:         {us.get('success_rate', 0):.1f}%")
+        lines.append("")
+        lines.append(f"  Total Batches:        {us.get('total_batches', 0)}")
+        lines.append(f"  Batches Completed:    {us.get('batches_completed', 0)}")
+        lines.append(f"  Batches Failed:       {us.get('batches_failed', 0)}")
+        lines.append("")
+
+        # Input files
+        inp = report.get("input", {})
+        lines.append("INPUT FILES")
+        lines.append("-" * 50)
+        lines.append(f"  Articles JSON:  {inp.get('input_file', 'N/A')}")
+        lines.append(f"  Checkpoint:     {inp.get('checkpoint_file', 'N/A')}")
+        lines.append("")
+
+        # Failed batches (if any)
+        if report.get('failed_batches'):
+            lines.append("FAILED BATCHES")
+            lines.append("-" * 50)
+            for fail in report['failed_batches'][:20]:
+                lines.append(f"  Batch {fail.get('batch_num', '?')}: {fail.get('error', 'Unknown error')}")
+            if len(report['failed_batches']) > 20:
+                lines.append(f"  ... and {len(report['failed_batches']) - 20} more")
+            lines.append("")
+
+        lines.append("=" * 70)
+        return "\n".join(lines)
 
 
 # Convenience function
